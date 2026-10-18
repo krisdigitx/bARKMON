@@ -2,10 +2,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: barkmon
+  annotations:
+    metallb.io/address-pool: home-lab-pool
   labels:
     app.kubernetes.io/name: barkmon
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app.kubernetes.io/name: barkmon
   ports:

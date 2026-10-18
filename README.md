@@ -40,13 +40,19 @@ kubectl -n kangal-monitor logs deployment/barkmon -c worker --tail=50
 kubectl -n kangal-monitor port-forward service/barkmon 8080:80
 ```
 
-Open `http://localhost:8080` on the machine running port-forward. If forwarding from your laptop through the bastion, use a second terminal on the laptop:
+For direct LAN access, the Service uses MetalLB's existing `home-lab-pool` (`192.168.1.240–192.168.1.250`). MetalLB selects an available address; no fixed IP is reserved in Git. After ArgoCD sync:
+
+```bash
+kubectl -n kangal-monitor get service barkmon -w
+```
+
+Open `http://<EXTERNAL-IP>` from a device on the LAN. If the address remains pending, run `kubectl -n kangal-monitor describe service barkmon` and check the pool has available addresses. The existing port-forward command is an alternative: open `http://localhost:8080` on the machine running port-forward. If forwarding from your laptop through the bastion, use a second terminal on the laptop:
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 ubuntu@192.168.1.210
 ```
 
-The Service is internal ClusterIP. There is no application login in this initial version. Keep access to trusted cluster users/port-forward; add an authenticated proxy before exposing it outside that boundary. A missing camera Secret prevents the worker container from starting; a disconnected camera is retried without failing the API. `/api/status` distinguishes worker and camera health.
+The Service exposes HTTP port 80 on the LAN through MetalLB. There is no application login in this initial version; LAN clients that can reach the address can access recordings and review controls. Use this on the trusted home network; add an authenticated proxy for broader access. A missing camera Secret prevents the worker container from starting; a disconnected camera is retried without failing the API. `/api/status` distinguishes worker and camera health.
 
 ## Configuration
 
