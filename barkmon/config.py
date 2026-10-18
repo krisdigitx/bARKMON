@@ -14,6 +14,12 @@ class Settings:
     timezone: str = os.getenv("REPORT_TIMEZONE", "Europe/London")
     night_start: int = int(os.getenv("NIGHT_START_HOUR", "22"))
     night_end: int = int(os.getenv("NIGHT_END_HOUR", "7"))
+    camera_id: str = "camera1"
+    camera_name: str = "Camera 1"
+    camera_host: str = os.getenv("CAMERA_HOST", "192.168.1.111")
+    camera_path: str = os.getenv("CAMERA_PATH", "/stream1")
+    camera2_host: str = os.getenv("CAMERA2_HOST", "")
+    camera2_path: str = os.getenv("CAMERA2_PATH", "/stream1")
     segment_seconds: int = 60
 
     def __post_init__(self):
@@ -31,3 +37,25 @@ class Settings:
     @property
     def recordings(self):
         return self.data_dir / "recordings"
+
+
+def camera_settings(settings):
+    """Preserve the first camera's existing files; isolate each other camera."""
+    from dataclasses import replace
+
+    cameras = [settings]
+    if settings.camera2_host:
+        cameras.append(
+            replace(
+                settings,
+                camera_id="camera2",
+                camera_name="Camera 2",
+                camera_host=settings.camera2_host,
+                camera_path=settings.camera2_path,
+                data_dir=settings.data_dir / "cameras" / "camera2",
+            )
+        )
+    return [
+        replace(camera, max_storage_bytes=settings.max_storage_bytes // len(cameras))
+        for camera in cameras
+    ]

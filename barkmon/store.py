@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS status (
 
 class Store:
     def __init__(self, settings):
+        self.settings = settings
         self.path = settings.data_dir / "barkmon.sqlite3"
         settings.recordings.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:

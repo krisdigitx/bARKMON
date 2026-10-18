@@ -1,10 +1,12 @@
-"""Single-camera recording and durable, restartable segment processing."""
+"""Independent camera recording with a shared, sequential detector."""
 
 import logging
 import os
 import select
 import shutil
 import signal
+import socket
+import errno
 import subprocess
 import threading
 import time
@@ -14,7 +16,7 @@ from urllib.parse import quote
 
 import numpy as np
 
-from barkmon.config import Settings
+from barkmon.config import Settings, camera_settings
 from barkmon.detection import RATE, Yamnet
 from barkmon.store import Store
 
@@ -86,20 +88,73 @@ def cleanup(settings, store, now=None):
         raise OSError("Storage reserve exhausted")
 
 
+def connection_error(message):
+    """Return safe fixed diagnostics; never retain raw FFmpeg output or URLs."""
+    message = message.lower()
+    if "401" in message or "unauthorized" in message:
+        return "RTSP authentication failed (401); check the camera account in Vault"
+    if "403" in message or "forbidden" in message:
+        return "RTSP access denied (403); check camera account permissions"
+    if "404" in message or "stream not found" in message:
+        return "RTSP stream not found; check the configured stream path"
+    if "option" in message and ("not found" in message or "unrecognized" in message):
+        return "Recorder option unsupported by this FFmpeg version"
+    if "connection refused" in message:
+        return "Camera refused RTSP; check that RTSP is enabled"
+    if "timed out" in message or "timeout" in message:
+        return "RTSP timed out; check camera connectivity and stream availability"
+    if "no route to host" in message or "network is unreachable" in message:
+        return "Camera unreachable; check camera IP, LAN routing and NAT"
+    if "does not contain any stream" in message or "matches no streams" in message:
+        return "Camera stream has no usable audio track"
+    return None
+
+
+def monitor_errors(pipe, diagnostics):
+    for line in iter(pipe.readline, b""):
+        reason = connection_error(line.decode(errors="replace"))
+        if reason:
+            # Authentication errors take precedence over generic end-of-stream errors.
+            if not diagnostics.get("reason", "").startswith("RTSP authentication"):
+                diagnostics["reason"] = reason
+
+
 def record(settings, store, stop):
     user = os.environ["RTSP_USERNAME"]
     password = os.environ["RTSP_PASSWORD"]
-    host = os.getenv("CAMERA_HOST", "192.168.1.111")
-    path = os.getenv("CAMERA_PATH", "/stream1")
+    host = settings.camera_host
+    path = settings.camera_path
     url = f"rtsp://{quote(user, safe='')}:{quote(password, safe='')}@{host}:554{path}"
     while not stop.is_set():
         process = None
+        error_reader = None
+        diagnostics = {}
+        last_request = store.statuses().get("reconnect_request", {}).get("updated", 0)
         pcm = bytearray()
         start = None
         try:
             cleanup(settings, store)
             store.status("recorder", "connecting")
-            # Never log argv or FFmpeg stderr: both can contain camera credentials.
+            store.status("connection_detail", "Checking camera TCP port 554")
+            try:
+                with socket.create_connection((host, 554), timeout=5):
+                    pass
+            except OSError as error:
+                reason = (
+                    "TCP connection timed out; check camera power/IP and targeted NAT"
+                )
+                if error.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+                    reason = (
+                        "Camera unreachable on the network; check its IP and routing"
+                    )
+                elif error.errno == errno.ECONNREFUSED:
+                    reason = "Camera refused TCP port 554; check that RTSP is enabled"
+                diagnostics["reason"] = reason
+                raise
+            store.status(
+                "connection_detail", "TCP reachable; opening authenticated RTSP audio"
+            )
+            # Never log argv or raw FFmpeg stderr: both can contain credentials.
             process = subprocess.Popen(
                 [
                     "ffmpeg",
@@ -123,12 +178,28 @@ def record(settings, store, stop):
                     "pipe:1",
                 ],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
+            error_reader = threading.Thread(
+                target=monitor_errors, args=(process.stderr, diagnostics), daemon=True
+            )
+            error_reader.start()
+            last_request_check = 0
             last_data = time.monotonic()
             last_status = 0
             target = settings.segment_seconds * RATE * 2
             while not stop.is_set():
+                if time.monotonic() - last_request_check > 1:
+                    last_request_check = time.monotonic()
+                    request = (
+                        store.statuses().get("reconnect_request", {}).get("updated", 0)
+                    )
+                    if request > last_request:
+                        store.status(
+                            "connection_detail",
+                            "Reconnect requested; checking again shortly",
+                        )
+                        break
                 if not select.select([process.stdout], [], [], 1)[0]:
                     if time.monotonic() - last_data > 20:
                         raise TimeoutError("No audio received")
@@ -149,6 +220,7 @@ def record(settings, store, stop):
                 pcm.extend(chunk)
                 if last_data - last_status > 5:
                     store.status("recorder", "recording")
+                    store.status("connection_detail", "Receiving audio over RTSP")
                     last_status = last_data
                 while len(pcm) >= target:
                     save_audio(settings, store, bytes(pcm[:target]), start)
@@ -157,7 +229,14 @@ def record(settings, store, stop):
                     cleanup(settings, store)
         except Exception as error:
             # Only log exception type, never exception text that may contain URLs.
-            log.warning("Recorder interrupted: %s", type(error).__name__)
+            if error_reader:
+                error_reader.join(timeout=0.1)
+            detail = (
+                diagnostics.get("reason")
+                or "RTSP audio stopped before data arrived; check stream availability"
+            )
+            log.warning("Camera %s: %s", settings.camera_id, detail)
+            store.status("connection_detail", detail)
             store.status("recorder", f"disconnected ({type(error).__name__}); retrying")
         finally:
             if process:
@@ -168,6 +247,9 @@ def record(settings, store, stop):
                     process.kill()
                     process.wait()
                 process.stdout.close()
+                if error_reader:
+                    error_reader.join(timeout=2)
+                process.stderr.close()
             if pcm and start is not None:
                 try:
                     save_audio(settings, store, pcm, start)
@@ -179,28 +261,41 @@ def record(settings, store, stop):
 def run():
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
-    store = Store(settings)
+    stores = [Store(camera) for camera in camera_settings(settings)]
     stop = threading.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())
-    recover(settings, store)
+    for store in stores:
+        recover(store.settings, store)
     model = Yamnet(settings.model_path, settings.threshold)
-    recorder = threading.Thread(
-        target=record, args=(settings, store, stop), daemon=True
-    )
-    recorder.start()
+    recorders = [
+        threading.Thread(target=record, args=(store.settings, store, stop), daemon=True)
+        for store in stores
+    ]
+    for recorder in recorders:
+        recorder.start()
     try:
         while not stop.is_set():
-            store.status("worker", "running")
-            if not recorder.is_alive():
-                raise RuntimeError("Recorder thread stopped")
-            with store.connect() as db:
-                row = db.execute(
-                    "SELECT * FROM segments WHERE state='pending' ORDER BY start LIMIT 1"
-                ).fetchone()
+            for store, recorder in zip(stores, recorders):
+                store.status("worker", "running")
+                if not recorder.is_alive():
+                    raise RuntimeError("Recorder thread stopped")
+            # Rotate the scan so one camera cannot starve the other detector queue.
+            stores.append(stores.pop(0))
+            recorders.append(recorders.pop(0))
+            row = None
+            for store in stores:
+                with store.connect() as db:
+                    row = db.execute(
+                        "SELECT * FROM segments WHERE state='pending' ORDER BY start LIMIT 1"
+                    ).fetchone()
+                if row:
+                    break
             if row:
                 try:
-                    with wave.open(str(settings.recordings / row["id"])) as stream:
+                    with wave.open(
+                        str(store.settings.recordings / row["id"])
+                    ) as stream:
                         audio = (
                             np.frombuffer(
                                 stream.readframes(stream.getnframes()), dtype="<i2"
@@ -228,8 +323,10 @@ def run():
                 stop.wait(2)
     finally:
         stop.set()
-        recorder.join(timeout=30)
-        store.status("worker", "stopped")
+        for recorder in recorders:
+            recorder.join(timeout=30)
+        for store in stores:
+            store.status("worker", "stopped")
 
 
 if __name__ == "__main__":

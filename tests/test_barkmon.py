@@ -201,6 +201,11 @@ def test_recorder_saves_partial_audio_on_disconnect_without_logging_credentials(
 
     monkeypatch.setenv("RTSP_USERNAME", "test@camera")
     monkeypatch.setenv("RTSP_PASSWORD", "secret:password")
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(
+        worker.socket, "create_connection", lambda *args, **kwargs: nullcontext()
+    )
     monkeypatch.setattr(worker.subprocess, "Popen", fake_camera)
     monkeypatch.setattr(worker, "save_audio", save_and_stop)
     worker.record(settings, store, stop)
@@ -248,3 +253,120 @@ def test_pipeline_stats_report_retained_audio_processing_states_and_reviews(setu
         assert stats["services"]["last_processing_seconds"]["value"] == "0.123"
         assert stats["audio_budget_bytes"] == settings.max_storage_bytes
         assert stats["retention_days"] == settings.retention_days
+
+
+def test_two_cameras_keep_history_audio_reviews_and_reconnect_requests_separate(setup):
+    from dataclasses import replace
+    from barkmon.config import camera_settings
+
+    settings, original = setup
+    settings = replace(settings, camera2_host="192.168.1.200")
+    configs = camera_settings(settings)
+    assert configs[0].data_dir == settings.data_dir
+    assert sum(c.max_storage_bytes for c in configs) <= settings.max_storage_bytes
+    second = Store(configs[1])
+    start = datetime(2026, 10, 18, 1, tzinfo=ZoneInfo("Europe/London")).timestamp()
+    save_audio(configs[0], original, bytes(32000), start)
+    save_audio(configs[1], second, b"\x01\x00" * 16000, start)
+    first_name = next(configs[0].recordings.glob("*.wav")).name
+    second_name = next(configs[1].recordings.glob("*.wav")).name
+    original.complete(first_name, [Event(start, start + 0.48, 0.8)])
+    second.complete(second_name, [Event(start, start + 0.96, 0.9)])
+    with TestClient(create_app(settings)) as client:
+        cameras = client.get("/api/cameras").json()["cameras"]
+        assert [c["host"] for c in cameras] == ["192.168.1.111", "192.168.1.200"]
+        assert client.get("/api/pipeline?camera=camera1").json()["files"] == 1
+        assert client.get("/api/pipeline?camera=camera2").json()["files"] == 1
+        assert (
+            client.get("/api/pipeline?camera=camera2").json()["audio_budget_bytes"]
+            == settings.max_storage_bytes // 2
+        )
+        assert (
+            client.get("/api/audio/1?camera=camera1").content
+            != client.get("/api/audio/1?camera=camera2").content
+        )
+        assert (
+            client.patch(
+                "/api/events/1?camera=camera2", json={"review": "rejected"}
+            ).status_code
+            == 200
+        )
+        assert (
+            client.get("/api/summary?date=2026-10-17&camera=camera1").json()["episodes"]
+            == 1
+        )
+        assert (
+            client.get("/api/summary?date=2026-10-17&camera=camera2").json()["episodes"]
+            == 0
+        )
+        assert (
+            "Camera 2"
+            in client.get("/api/report.csv?date=2026-10-17&camera=camera2").text
+        )
+        assert client.get(
+            "/api/report.pdf?date=2026-10-17&camera=camera2"
+        ).content.startswith(b"%PDF")
+        assert (
+            client.post(
+                "/api/camera/check?camera=camera2",
+                headers={"Origin": "https://evil.example"},
+            ).status_code
+            == 403
+        )
+        assert client.post("/api/camera/check?camera=camera2").status_code == 202
+        assert "reconnect_request" in second.statuses()
+        assert "reconnect_request" not in original.statuses()
+        assert client.get("/api/pipeline?camera=unknown").status_code == 404
+        assert client.post("/api/camera/check?camera=unknown").status_code == 404
+
+
+def test_connection_diagnostics_use_fixed_messages_without_leaking_secrets():
+    import io
+    from barkmon.worker import connection_error, monitor_errors
+
+    assert "authentication failed" in connection_error(
+        "rtsp://secret:password@camera: 401 Unauthorized"
+    )
+    assert "Camera refused" in connection_error("Connection refused")
+    assert "stream not found" in connection_error("404 Stream not found")
+    assert "option unsupported" in connection_error("Option timeout not found")
+    assert (
+        connection_error("rtsp://secret:password@camera: some unknown failure") is None
+    )
+    diagnostics = {}
+    monitor_errors(
+        io.BytesIO(
+            b"rtsp://secret:password@camera 401 Unauthorized\nConnection refused\n"
+        ),
+        diagnostics,
+    )
+    assert "authentication failed" in diagnostics["reason"]
+    assert (
+        "secret" not in diagnostics["reason"]
+        and "password" not in diagnostics["reason"]
+    )
+
+
+def test_tcp_failure_reports_reason_without_starting_ffmpeg(setup, monkeypatch):
+    import threading
+    import errno
+    from barkmon import worker
+
+    settings, store = setup
+    stop = threading.Event()
+    monkeypatch.setenv("RTSP_USERNAME", "test")
+    monkeypatch.setenv("RTSP_PASSWORD", "dummy")
+
+    def unreachable(*args, **kwargs):
+        stop.set()
+        raise OSError(errno.EHOSTUNREACH, "No route to host")
+
+    monkeypatch.setattr(worker.socket, "create_connection", unreachable)
+    monkeypatch.setattr(
+        worker.subprocess,
+        "Popen",
+        lambda *a, **k: pytest.fail("Must not start FFmpeg when TCP fails"),
+    )
+    worker.record(settings, store, stop)
+    assert "Camera unreachable" in store.statuses()["connection_detail"]["value"]
+    assert store.statuses()["recorder"]["value"].startswith("disconnected")

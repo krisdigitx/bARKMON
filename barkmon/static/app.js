@@ -1,11 +1,11 @@
 const $ = id => document.getElementById(id);
-let offset = 0, total = 0, zone = 'Europe/London', loading = false;
+let offset = 0, total = 0, zone = 'Europe/London', loading = false, refreshAgain = false;
 const size = 100;
 const gib = bytes => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(2)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
 const age = seconds => seconds === null ? '—' : seconds < 60 ? `${Math.floor(seconds)}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${(seconds / 3600).toFixed(1)}h`;
 const duration = seconds => seconds >= 60 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : `${seconds.toFixed(1)}s`;
 const stamp = seconds => new Date(seconds * 1000).toLocaleString('en-GB', {timeZone: zone, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'});
-const params = () => new URLSearchParams({mode: $('mode').value, ...($('date').value ? {date: $('date').value} : {})});
+const params = () => new URLSearchParams({camera: $('camera').value, mode: $('mode').value, ...($('date').value ? {date: $('date').value} : {})});
 async function request(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) throw new Error(`Request failed (${response.status}). Please retry.`);
@@ -13,16 +13,30 @@ async function request(url, options) {
 }
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; }
 async function refresh() {
-  if (loading) return;
+  if (loading) { refreshAgain = true; return; }
   loading = true;
   try {
+    const cameraList = await request('/api/cameras');
+    const selectedCamera = $('camera').value;
+    const cameraSignature = JSON.stringify(cameraList.cameras.map(camera => [camera.id, camera.name, camera.host]));
+    if ($('camera').dataset.signature !== cameraSignature) {
+      $('camera').replaceChildren(...cameraList.cameras.map(camera => new Option(`${camera.name} · ${camera.host}`, camera.id)));
+      if (cameraList.cameras.some(camera => camera.id === selectedCamera)) $('camera').value = selectedCamera;
+      $('camera').dataset.signature = cameraSignature;
+    }
+    const camera = cameraList.cameras.find(camera => camera.id === $('camera').value);
     const query = params();
     const [status, summary, list, pipeline] = await Promise.all([
-      request('/api/status'), request(`/api/summary?${query}`),
-      request(`/api/events?${query}&limit=${size}&offset=${offset}`), request("/api/pipeline")
+      request(`/api/status?camera=${encodeURIComponent(camera.id)}`), request(`/api/summary?${query}`),
+      request(`/api/events?${query}&limit=${size}&offset=${offset}`), request(`/api/pipeline?camera=${encodeURIComponent(camera.id)}`)
     ]);
+    if (query.toString() !== params().toString()) { refreshAgain = true; return; }
     zone = status.timezone;
     $('error').hidden = true;
+    $('camera-host').textContent = `${camera.name} · ${camera.host}`;
+    const detail = status.services.connection_detail;
+    $('connection-detail').textContent = detail?.value || 'Waiting for camera worker diagnostics';
+    $('connection-updated').textContent = detail ? `Last check ${age(Math.max(0, status.now - detail.updated))} ago. Reconnecting briefly interrupts this camera's capture.` : 'Use Check / reconnect to retry this camera.';
     $('live').textContent = status.recording ? '● Recording' : status.worker_healthy ? '○ Camera disconnected' : '○ Worker offline';
     $('episodes').textContent = summary.episodes;
     $('duration').textContent = duration(summary.barking_seconds);
@@ -81,7 +95,7 @@ async function refresh() {
       select.onchange = async () => {
         select.disabled = true;
         try {
-          await request(`/api/events/${event.id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review: select.value})});
+          await request(`/api/events/${event.id}?camera=${encodeURIComponent(camera.id)}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review: select.value})});
           await refresh();
         } catch (error) { select.value = event.review; showError(error); }
         finally { select.disabled = false; }
@@ -93,7 +107,7 @@ async function refresh() {
         const player = $('player'); player.hidden = false;
         const from = Math.max(0, event.start - event.segment_start - 1);
         const to = event.end - event.segment_start + 1;
-        player.src = `/api/audio/${event.id}#t=${from},${to}`;
+        player.src = `/api/audio/${event.id}?camera=${encodeURIComponent(camera.id)}#t=${from},${to}`;
         player.play().catch(showError);
       };
       playCell.append(play); row.append(playCell); $('events').append(row);
@@ -108,11 +122,19 @@ async function refresh() {
     $('next').disabled = offset + size >= total;
     $('page').textContent = total ? `${offset + 1}–${Math.min(offset + size, total)} of ${total}` : '0 detections';
   } catch (error) { showError(error); $('live').textContent = '○ Connection unavailable'; }
-  finally { loading = false; }
+  finally { loading = false; if (refreshAgain) { refreshAgain = false; refresh(); } }
 }
 $('refresh').onclick = () => refresh();
-for (const id of ['date', 'mode']) $(id).onchange = () => { offset = 0; refresh(); };
+for (const id of ['date', 'mode', 'camera']) $(id).onchange = () => { offset = 0; if (id === 'camera') { $('events').replaceChildren(); $('player').pause(); $('player').removeAttribute('src'); $('player').hidden = true; } refresh(); };
 $('previous').onclick = () => { offset = Math.max(0, offset - size); refresh(); };
 $('next').onclick = () => { offset += size; refresh(); };
+$('check-camera').onclick = async () => {
+  $('check-camera').disabled = true;
+  try {
+    await request(`/api/camera/check?camera=${encodeURIComponent($('camera').value)}`, {method: 'POST'});
+    $('connection-detail').textContent = 'Check requested. The worker will reconnect shortly; this panel refreshes every 15 seconds.';
+  } catch (error) { showError(error); }
+  finally { $('check-camera').disabled = false; }
+};
 refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 15000);
