@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
@@ -52,7 +53,14 @@ def create_app(settings=None):
 
     def check_origin(request):
         origin = request.headers.get("origin")
-        if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        allowed = {str(request.base_url).rstrip("/")}
+        # The tunnel terminates TLS outside this pod. Trust only the configured
+        # public origin, and only when the request is addressed to that host.
+        if settings.public_base_url:
+            public = urlsplit(settings.public_base_url)
+            if request.headers.get("host", "").lower() == public.netloc.lower():
+                allowed.add(settings.public_base_url.rstrip("/"))
+        if origin and origin.rstrip("/") not in allowed:
             raise HTTPException(403, "Cross-origin requests are not allowed")
 
     @app.get("/api/cameras")
@@ -436,7 +444,7 @@ def create_app(settings=None):
             end,
             time.time(),
             mode,
-            str(request.base_url),
+            settings.report_base_url or str(request.base_url),
         )
         return Response(
             data,

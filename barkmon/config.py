@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -25,10 +26,23 @@ class Settings:
     episode_gap_seconds: float = float(os.getenv("EPISODE_GAP_SECONDS", "1"))
     report_retention_days: int = int(os.getenv("REPORT_RETENTION_DAYS", "90"))
     report_max_bytes: int = int(float(os.getenv("REPORT_MAX_MIB", "256")) * 1024**2)
+    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")
     report_base_url: str = os.getenv("REPORT_BASE_URL", "")
     segment_seconds: int = 60
 
     def __post_init__(self):
+        if self.public_base_url:
+            url = urlsplit(self.public_base_url)
+            if (
+                url.scheme not in ("http", "https")
+                or not url.netloc
+                or url.username
+                or url.password
+                or url.path not in ("", "/")
+                or url.query
+                or url.fragment
+            ):
+                raise ValueError("PUBLIC_BASE_URL must be an HTTP(S) origin")
         if (
             not 0 <= self.dedup_seconds <= 5
             or not 0 <= self.dedup_similarity <= 1

@@ -379,3 +379,55 @@ def test_dashboard_assets_are_reloaded_after_deployments(setup):
             response = client.get(path)
             assert response.status_code == 200
             assert response.headers["cache-control"] == "no-store"
+
+
+def test_tunnel_origin_controls(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path, public_base_url="https://dogmon.badgerlab.uk"
+    )
+    with TestClient(
+        create_app(settings), base_url="http://dogmon.badgerlab.uk"
+    ) as client:
+        assert (
+            client.post(
+                "/api/camera/check", headers={"Origin": "https://dogmon.badgerlab.uk"}
+            ).status_code
+            == 202
+        )
+        assert (
+            client.post(
+                "/api/camera/check", headers={"Origin": "https://evil.example"}
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/api/camera/check",
+                headers={
+                    "Host": "192.168.1.249",
+                    "Origin": "https://dogmon.badgerlab.uk",
+                },
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/api/camera/check",
+                headers={"Host": "192.168.1.249", "Origin": "http://192.168.1.249"},
+            ).status_code
+            == 202
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/path",
+        "https://user:pass@example.com",
+        "ftp://example.com",
+        "https://example.com?query=1",
+    ],
+)
+def test_invalid_public_origin(url):
+    with pytest.raises(ValueError, match="PUBLIC_BASE_URL"):
+        Settings(public_base_url=url)

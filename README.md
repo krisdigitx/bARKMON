@@ -141,3 +141,12 @@ YAMNet is provided by TensorFlow under Apache-2.0. Its bundled metadata includes
 - [YAMNet source and license](https://github.com/tensorflow/models/tree/master/research/audioset/yamnet)
 
 The checksum and exact download URL are in `scripts/download_model.py`.
+
+## Cloudflare access
+
+Deploy configuration sets the public origin and PDF clip links to
+`https://dogmon.badgerlab.uk`. Add this hostname to the existing `home-cluster`
+tunnel with HTTP origin `barkmon.kangal-monitor.svc.cluster.local:80` and protect
+it with Cloudflare Access. Follow `docs/BARKMON_CLOUDFLARE.md` in home-lab for
+the dashboard setup and verification. The tunnel routes are remotely managed;
+Argo CD deploys the app and connector but does not create the Cloudflare route.
