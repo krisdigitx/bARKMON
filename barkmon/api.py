@@ -69,6 +69,47 @@ def create_app(settings=None):
             "now": time.time(),
         }
 
+    @app.get("/api/pipeline")
+    def pipeline():
+        stats = app.state.store.inventory()
+        space = shutil.disk_usage(settings.data_dir)
+        now = time.time()
+        database_bytes = 0
+        for path in settings.data_dir.glob("barkmon.sqlite3*"):
+            try:
+                database_bytes += path.stat().st_size
+            except FileNotFoundError:
+                # SQLite may checkpoint/remove WAL files between listing and stat.
+                continue
+        stats.update(
+            {
+                "audio_budget_bytes": settings.max_storage_bytes,
+                "audio_budget_percent": round(
+                    100 * stats["audio_bytes"] / settings.max_storage_bytes, 1
+                ),
+                "volume_used_bytes": space.used,
+                "volume_free_bytes": space.free,
+                "volume_total_bytes": space.total,
+                "database_bytes": database_bytes,
+                "processed_percent": round(
+                    100 * stats["processed_seconds"] / stats["audio_seconds"], 1
+                )
+                if stats["audio_seconds"]
+                else 0,
+                "oldest_pending_age_seconds": max(0, now - stats["oldest_pending"])
+                if stats["oldest_pending"] is not None
+                else None,
+                "latest_recording_age_seconds": max(0, now - stats["latest_recording"])
+                if stats["latest_recording"] is not None
+                else None,
+                "retention_days": settings.retention_days,
+                "segment_seconds": settings.segment_seconds,
+                "format": "16 kHz · mono · 16-bit PCM WAV",
+                "services": app.state.store.statuses(),
+            }
+        )
+        return stats
+
     @app.get("/api/summary")
     def get_summary(
         date: str | None = None, mode: Literal["night", "day", "week"] = "night"

@@ -70,3 +70,32 @@ class Store:
                 [(segment_id, e.start, e.end, e.score) for e in events],
             )
             db.execute("UPDATE segments SET state='done' WHERE id=?", (segment_id,))
+
+    def inventory(self):
+        """Retained/indexed recordings only; excludes the in-flight audio buffer."""
+        with self.connect() as db:
+            row = db.execute("""
+                SELECT count(*) AS files, coalesce(sum(bytes),0) AS audio_bytes,
+                    coalesce(sum(duration),0) AS audio_seconds,
+                    coalesce(sum(state='done'),0) AS processed_files,
+                    coalesce(sum(state='pending'),0) AS pending_files,
+                    coalesce(sum(state='failed'),0) AS failed_files,
+                    coalesce(sum(CASE WHEN state='done' THEN duration ELSE 0 END),0) AS processed_seconds,
+                    coalesce(sum(CASE WHEN state='pending' THEN duration ELSE 0 END),0) AS pending_seconds,
+                    min(start) AS oldest_recording,
+                    max(start+duration) AS latest_recording,
+                    min(CASE WHEN state='pending' THEN start END) AS oldest_pending
+                FROM segments
+            """).fetchone()
+            reviews = dict(
+                db.execute(
+                    "SELECT review,count(*) FROM events GROUP BY review"
+                ).fetchall()
+            )
+        return {
+            **dict(row),
+            "detections": sum(reviews.values()),
+            "confirmed": reviews.get("confirmed", 0),
+            "rejected": reviews.get("rejected", 0),
+            "unreviewed": reviews.get("unreviewed", 0),
+        }

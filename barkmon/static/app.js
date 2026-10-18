@@ -1,6 +1,8 @@
 const $ = id => document.getElementById(id);
 let offset = 0, total = 0, zone = 'Europe/London', loading = false;
 const size = 100;
+const gib = bytes => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(2)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
+const age = seconds => seconds === null ? '—' : seconds < 60 ? `${Math.floor(seconds)}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${(seconds / 3600).toFixed(1)}h`;
 const duration = seconds => seconds >= 60 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : `${seconds.toFixed(1)}s`;
 const stamp = seconds => new Date(seconds * 1000).toLocaleString('en-GB', {timeZone: zone, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'});
 const params = () => new URLSearchParams({mode: $('mode').value, ...($('date').value ? {date: $('date').value} : {})});
@@ -15,9 +17,9 @@ async function refresh() {
   loading = true;
   try {
     const query = params();
-    const [status, summary, list] = await Promise.all([
+    const [status, summary, list, pipeline] = await Promise.all([
       request('/api/status'), request(`/api/summary?${query}`),
-      request(`/api/events?${query}&limit=${size}&offset=${offset}`)
+      request(`/api/events?${query}&limit=${size}&offset=${offset}`), request("/api/pipeline")
     ]);
     zone = status.timezone;
     $('error').hidden = true;
@@ -30,6 +32,24 @@ async function refresh() {
     $('period').textContent = `${stamp(summary.start)} — ${stamp(summary.end)} · ${zone}`;
     $('backlog').textContent = `${summary.pending_segments} pending · ${summary.failed_segments} failed`;
     $('storage').textContent = `${(status.free_bytes / 1024 ** 3).toFixed(1)} GiB free · ${status.retention_days}-day retention · Night ${status.night_start}:00–${status.night_end}:00`;
+    $('pipeline-format').textContent = pipeline.format;
+    $('audio-hours').textContent = `${(pipeline.audio_seconds / 3600).toFixed(2)} h`;
+    $('file-count').textContent = `${pipeline.files.toLocaleString()} WAV ${pipeline.files === 1 ? 'file' : 'files'} · ${pipeline.segment_seconds}s target length`;
+    $('audio-budget').textContent = `${gib(pipeline.audio_bytes)} / ${gib(pipeline.audio_budget_bytes)}`;
+    $('budget-meter').value = Math.min(100, pipeline.audio_budget_percent);
+    $('volume-space').textContent = `${gib(pipeline.volume_used_bytes)} / ${gib(pipeline.volume_total_bytes)} volume used · ${gib(pipeline.volume_free_bytes)} free · ${gib(pipeline.database_bytes)} database`;
+    $('processed-percent').textContent = `${pipeline.processed_percent}%`;
+    $('processing-counts').textContent = `${pipeline.processed_files} processed · ${pipeline.failed_files} failed`;
+    const timing = pipeline.services.last_processing_seconds;
+    $('processing-time').textContent = timing ? `Last file analysed in ${Number(timing.value).toFixed(2)}s · ${age(Math.max(0, status.now - timing.updated))} ago` : 'Processing time available after the next analysis';
+    $('pending-count').textContent = `${pipeline.pending_files} files`;
+    $('pending-age').textContent = pipeline.pending_files ? `${duration(pipeline.pending_seconds)} audio · oldest ${age(pipeline.oldest_pending_age_seconds)}` : 'Analysis queue is clear';
+    $('latest-recording').textContent = pipeline.latest_recording === null ? 'No recordings yet' : `${stamp(pipeline.latest_recording)} · ${age(pipeline.latest_recording_age_seconds)} ago`;
+    $('oldest-recording').textContent = pipeline.oldest_recording === null ? '—' : stamp(pipeline.oldest_recording);
+    $('review-counts').textContent = `${pipeline.confirmed} confirmed · ${pipeline.rejected} false ${pipeline.rejected === 1 ? 'alarm' : 'alarms'} · ${pipeline.unreviewed} unreviewed`;
+    const services = pipeline.services;
+    $('pipeline-health').textContent = `${services.recorder?.value || 'not started'} / ${services.detector?.value || 'not started'}${status.worker_healthy ? '' : ' · worker offline'}`;
+    $('retention-explanation').textContent = `Older audio and matching records are removed after ${pipeline.retention_days} days or when the ${gib(pipeline.audio_budget_bytes)} audio budget or free-space reserve is reached, whichever comes first.`;
     $('csv').href = `/api/report.csv?${query}`;
     $('pdf').href = `/api/report.pdf?${query}`;
     $('chart').replaceChildren();

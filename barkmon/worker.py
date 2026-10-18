@@ -207,7 +207,13 @@ def run():
                             ).astype(np.float32)
                             / 32768
                         )
-                    store.complete(row["id"], model.detect(audio, row["start"]))
+                    processing_started = time.monotonic()
+                    events = model.detect(audio, row["start"])
+                    store.complete(row["id"], events)
+                    store.status(
+                        "last_processing_seconds",
+                        f"{time.monotonic() - processing_started:.3f}",
+                    )
                     store.status("detector", "running")
                 except Exception as error:
                     log.warning("Segment processing failed: %s", type(error).__name__)

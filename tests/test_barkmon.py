@@ -210,3 +210,41 @@ def test_recorder_saves_partial_audio_on_disconnect_without_logging_credentials(
         assert row["state"] == "pending"
     assert "secret%3Apassword" in launched[0][launched[0].index("-i") + 1]
     assert "secret" not in caplog.text
+
+
+def test_pipeline_stats_report_retained_audio_processing_states_and_reviews(setup):
+    settings, store = setup
+    with TestClient(create_app(settings)) as client:
+        empty = client.get("/api/pipeline").json()
+        assert empty["files"] == 0
+        assert empty["processed_percent"] == 0
+        assert empty["latest_recording"] is None
+        assert empty["oldest_pending_age_seconds"] is None
+        store.add_segment("done.wav", 1000, 20, 640044)
+        store.add_segment("pending.wav", 1020, 60, 1920044)
+        store.add_segment("failed.wav", 1080, 10, 320044)
+        store.complete("done.wav", [Event(1001, 1002, 0.8), Event(1005, 1006, 0.7)])
+        with store.connect() as db:
+            db.execute("UPDATE segments SET state='failed' WHERE id='failed.wav'")
+            db.execute("UPDATE events SET review='confirmed' WHERE start=1001")
+            db.execute("UPDATE events SET review='rejected' WHERE start=1005")
+        store.status("last_processing_seconds", "0.123")
+        stats = client.get("/api/pipeline").json()
+        assert stats["files"] == 3
+        assert stats["audio_bytes"] == 2880132
+        assert stats["audio_seconds"] == 90
+        assert stats["processed_files"] == 1
+        assert stats["pending_files"] == 1
+        assert stats["failed_files"] == 1
+        assert stats["pending_seconds"] == 60
+        assert stats["processed_percent"] == 22.2  # duration-based, not file count
+        assert stats["oldest_recording"] == 1000
+        assert stats["latest_recording"] == 1090
+        assert stats["oldest_pending_age_seconds"] > 0
+        assert stats["confirmed"] == 1 and stats["rejected"] == 1
+        assert stats["detections"] == 2 and stats["unreviewed"] == 0
+        assert stats["database_bytes"] > 0
+        assert stats["volume_free_bytes"] > 0
+        assert stats["services"]["last_processing_seconds"]["value"] == "0.123"
+        assert stats["audio_budget_bytes"] == settings.max_storage_bytes
+        assert stats["retention_days"] == settings.retention_days

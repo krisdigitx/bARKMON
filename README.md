@@ -54,6 +54,12 @@ ssh -L 8080:127.0.0.1:8080 ubuntu@192.168.1.210
 
 The Service exposes HTTP port 80 on the LAN through MetalLB. There is no application login in this initial version; LAN clients that can reach the address can access recordings and review controls. Use this on the trusted home network; add an authenticated proxy for broader access. A missing camera Secret prevents the worker container from starting; a disconnected camera is retried without failing the API. `/api/status` distinguishes worker and camera health.
 
+## Recording and processing statistics
+
+The dashboard's **From camera to clarity** panel refreshes every 15 seconds and covers all retained recordings, independently of the selected reporting period. It shows indexed WAV file count and audio hours, audio bytes against the configured budget, volume free space, database size, processed audio percentage, processed/pending/failed file counts, oldest queued audio age, first/latest retained recording times, review totals, recorder/detector state, and the latest file's analysis time. Processing timing becomes available after the updated worker analyses its next file.
+
+The in-flight recording buffer is not counted until a file is saved. Processed percentage uses audio duration, so a short interrupted segment has proportionately less weight than a full minute. These inventory statistics are available from `/api/pipeline`. The expandable explanation describes capture, file storage, detection, and retention.
+
 ## Configuration
 
 Edit `deploy/config.env`; Kustomize generates a versioned ConfigMap so changes trigger rollout automatically.
