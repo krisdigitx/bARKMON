@@ -16,7 +16,7 @@ class Settings:
     night_end: int = int(os.getenv("NIGHT_END_HOUR", "7"))
     camera_id: str = "camera1"
     camera_name: str = "Camera 1"
-    camera_host: str = os.getenv("CAMERA_HOST", "192.168.1.111")
+    camera_host: str = os.getenv("CAMERA_HOST", "192.168.1.112")
     camera_path: str = os.getenv("CAMERA_PATH", "/stream1")
     camera2_host: str = os.getenv("CAMERA2_HOST", "")
     camera2_path: str = os.getenv("CAMERA2_PATH", "/stream1")
