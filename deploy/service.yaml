@@ -4,6 +4,7 @@ metadata:
   name: barkmon
   annotations:
     metallb.io/address-pool: home-lab-pool
+    metallb.io/loadBalancerIPs: 192.168.1.249
   labels:
     app.kubernetes.io/name: barkmon
 spec:

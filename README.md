@@ -40,7 +40,7 @@ kubectl -n kangal-monitor logs deployment/barkmon -c worker --tail=50
 kubectl -n kangal-monitor port-forward service/barkmon 8080:80
 ```
 
-For direct LAN access, the Service uses MetalLB's existing `home-lab-pool` (`192.168.1.240–192.168.1.250`). MetalLB selects an available address; no fixed IP is reserved in Git. After ArgoCD sync:
+For direct LAN access, the Service uses MetalLB's existing `home-lab-pool` (`192.168.1.240–192.168.1.250`). The Service requests `192.168.1.249`. The previous automatically allocated `.247` was answered by another LAN device (`Server: SHIP 2.0`), so it must not be used for barkmon. Keep `.249` reserved outside the router DHCP allocation range. After ArgoCD sync:
 
 ```bash
 kubectl -n kangal-monitor get service barkmon -w
