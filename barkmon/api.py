@@ -2,6 +2,8 @@ import csv
 import io
 import shutil
 import time
+import wave
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +18,8 @@ from pydantic import BaseModel
 from barkmon.config import Settings, camera_settings
 from barkmon.reporting import period, summary
 from barkmon.store import Store
+from barkmon.timeline import combined_summary, episodes
+from barkmon.reports import render_pdf
 
 STATIC = Path(__file__).parent / "static"
 
@@ -32,6 +36,13 @@ def create_app(settings=None):
 
     app = FastAPI(title="Barkmon", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    @app.middleware("http")
+    async def fresh_dashboard(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     def selected_store(camera: str = "camera1"):
         store = app.state.stores.get(camera)
@@ -260,68 +271,268 @@ def create_app(settings=None):
             },
         )
 
-    @app.get("/api/report.pdf")
-    def report_pdf(
+    def timeline_stores(camera):
+        if camera == "all":
+            return list(app.state.stores.values())
+        store = app.state.stores.get(camera)
+        if store is None:
+            raise HTTPException(404, "Camera not configured")
+        return [store]
+
+    @app.get("/api/timeline")
+    def timeline(
         date: str | None = None,
         mode: Literal["night", "day", "week"] = "night",
+        camera: str = "all",
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ):
+        values, _ = episodes(timeline_stores(camera), settings, *bounds(date, mode))
+        values.reverse()
+        return {"total": len(values), "events": values[offset : offset + limit]}
+
+    @app.get("/api/timeline/summary")
+    def timeline_summary(
+        date: str | None = None,
+        mode: Literal["night", "day", "week"] = "night",
+        camera: str = "all",
+    ):
+        return combined_summary(
+            timeline_stores(camera), settings, *bounds(date, mode), time.time()
+        )
+
+    @app.get("/api/overview")
+    def overview():
+        stores = list(app.state.stores.values())
+        states = [status(store) for store in stores]
+        pipelines = [pipeline(store) for store in stores]
+        combined = dict(pipelines[0])
+        for key in [
+            "files",
+            "audio_bytes",
+            "audio_seconds",
+            "processed_files",
+            "pending_files",
+            "failed_files",
+            "processed_seconds",
+            "pending_seconds",
+            "database_bytes",
+            "audio_budget_bytes",
+            "detections",
+            "confirmed",
+            "rejected",
+            "unreviewed",
+        ]:
+            combined[key] = sum(p[key] for p in pipelines)
+        for key in ["oldest_recording", "oldest_pending"]:
+            combined[key] = min(
+                (p[key] for p in pipelines if p[key] is not None), default=None
+            )
+        combined["latest_recording"] = max(
+            (
+                p["latest_recording"]
+                for p in pipelines
+                if p["latest_recording"] is not None
+            ),
+            default=None,
+        )
+        combined["audio_budget_percent"] = round(
+            100 * combined["audio_bytes"] / combined["audio_budget_bytes"], 1
+        )
+        combined["processed_percent"] = (
+            round(100 * combined["processed_seconds"] / combined["audio_seconds"], 1)
+            if combined["audio_seconds"]
+            else 0
+        )
+        for key, source in [
+            ("latest_recording_age_seconds", "latest_recording"),
+            ("oldest_pending_age_seconds", "oldest_pending"),
+        ]:
+            combined[key] = (
+                max(0, time.time() - combined[source])
+                if combined[source] is not None
+                else None
+            )
+        count = sum(s["recording"] for s in states)
+        services = {
+            "recorder": {"value": f"{count}/{len(states)} cameras recording"},
+            "detector": {"value": "Shared detector"},
+        }
+        timing = max(
+            (
+                p["services"]["last_processing_seconds"]
+                for p in pipelines
+                if "last_processing_seconds" in p["services"]
+            ),
+            key=lambda v: v["updated"],
+            default=None,
+        )
+        if timing:
+            services["last_processing_seconds"] = timing
+        combined["services"] = services
+        state = dict(
+            states[0],
+            camera_id="all",
+            camera_host="All cameras",
+            recording=count > 0,
+            worker_healthy=all(s["worker_healthy"] for s in states),
+            services=services,
+            recording_cameras=count,
+            total_cameras=len(states),
+        )
+        return {"status": state, "pipeline": combined}
+
+    @app.get("/api/clip/{event_id}")
+    def clip(
+        event_id: int,
+        segment: str | None = None,
         store: Store = Depends(selected_store),
     ):
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen.canvas import Canvas
-
-        start, end = bounds(date, mode)
-        stats = summary(store, start, end, time.time())
-        buffer = io.BytesIO()
-        canvas = Canvas(buffer, pagesize=A4)
-        zone = ZoneInfo(settings.timezone)
-
-        def stamp(timestamp):
-            return datetime.fromtimestamp(timestamp, zone).strftime("%d %b %Y %H:%M %Z")
-
-        lines = [
-            "Barkmon monitoring report",
-            f"{store.settings.camera_name} ({store.settings.camera_host})",
-            f"{stamp(start)} to {stamp(end)}",
-            f"Generated: {stamp(time.time())}",
-            "",
-            f"Detected episodes: {stats['episodes']}",
-            f"Estimated barking duration: {stats['barking_seconds']} seconds",
-            f"Longest episode: {stats['longest_episode_seconds']} seconds",
-            f"Recording coverage of elapsed period: {stats['coverage_percent']}%",
-            f"Analysed coverage: {stats['analysis_percent']}%",
-            f"Unrecorded elapsed time: {stats['gap_seconds']} seconds",
-            f"Pending / failed segments: {stats['pending_segments']} / {stats['failed_segments']}",
-            "",
-            "Automated YAMNet detections are estimates, not individual bark counts.",
-            "Rejected detections are excluded from the totals. No calibrated noise level is measured.",
-            f"Reports include only retained data (retention: {settings.retention_days} days).",
-            "",
-            "Detection timeline (local time, estimated seconds, score, review):",
-        ]
         with store.connect() as db:
-            for row in db.execute(
-                "SELECT * FROM events WHERE start<? AND end>? ORDER BY start",
-                (end, start),
-            ):
-                lines.append(
-                    f"{stamp(row['start'])}   {min(end, row['end']) - max(start, row['start']):.2f}s   {row['score']:.2f}   {row['review']}"
+            row = db.execute(
+                "SELECT e.*,s.start AS segment_start FROM events e JOIN segments s ON s.id=e.segment_id WHERE e.id=?",
+                (event_id,),
+            ).fetchone()
+        if not row or (segment is not None and row["segment_id"] != segment):
+            raise HTTPException(404, "Source detection no longer retained")
+        try:
+            with wave.open(
+                str(store.settings.recordings / row["segment_id"])
+            ) as source:
+                rate = source.getframerate()
+                begin = max(0, int((row["start"] - row["segment_start"] - 1) * rate))
+                finish = min(
+                    source.getnframes(),
+                    int((row["end"] - row["segment_start"] + 1) * rate),
                 )
-        y = 800
-        for line in lines:
-            if y < 45:
-                canvas.showPage()
-                y = 800
-            canvas.setFont("Helvetica", 10)
-            canvas.drawString(40, y, line)
-            y -= 18
-        canvas.save()
+                source.setpos(begin)
+                pcm = source.readframes(max(0, finish - begin))
+                output = io.BytesIO()
+                with wave.open(output, "wb") as target:
+                    target.setparams(source.getparams())
+                    target.writeframes(pcm)
+        except (OSError, EOFError, wave.Error):
+            raise HTTPException(404, "Source audio expired or unavailable") from None
         return Response(
-            buffer.getvalue(),
-            media_type="application/pdf",
+            output.getvalue(),
+            media_type="audio/wav",
             headers={
-                "Content-Disposition": 'attachment; filename="barkmon-report.pdf"'
+                "Content-Disposition": f'inline; filename="{store.settings.camera_id}-event-{event_id}.wav"'
             },
         )
+
+    @app.get("/api/report.pdf")
+    def report_pdf(
+        request: Request,
+        date: str | None = None,
+        mode: Literal["night", "day", "week"] = "night",
+        camera: str = "all",
+    ):
+        start, end = bounds(date, mode)
+        data = render_pdf(
+            timeline_stores(camera),
+            settings,
+            start,
+            end,
+            time.time(),
+            mode,
+            str(request.base_url),
+        )
+        return Response(
+            data,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="dog-monitor-{mode}-{datetime.fromtimestamp(start, ZoneInfo(settings.timezone)).date()}.pdf"'
+            },
+        )
+
+    @app.get("/api/timeline.csv")
+    def timeline_csv(
+        date: str | None = None,
+        mode: Literal["night", "day", "week"] = "night",
+        camera: str = "all",
+    ):
+        values, _ = episodes(timeline_stores(camera), settings, *bounds(date, mode))
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(
+            [
+                "Episode",
+                "Start",
+                "End",
+                "Span seconds",
+                "Active seconds",
+                "Estimated bark pulses",
+                "Pulses/min within episode",
+                "Strongest measured camera",
+                "RMS dBFS",
+                "Peak dBFS",
+                "Deduplication",
+                "Sources",
+            ]
+        )
+        for event in values:
+            writer.writerow(
+                [
+                    event["id"],
+                    datetime.fromtimestamp(
+                        event["start"], ZoneInfo(settings.timezone)
+                    ).isoformat(),
+                    datetime.fromtimestamp(
+                        event["end"], ZoneInfo(settings.timezone)
+                    ).isoformat(),
+                    event["duration"],
+                    event["active_seconds"],
+                    event["bark_count"],
+                    event["barks_per_minute"],
+                    event["strongest_camera_name"],
+                    event["rms_dbfs"],
+                    event["peak_dbfs"],
+                    event["dedup_method"],
+                    "; ".join(
+                        f"{c['camera_id']}:{c['event_id']}" for c in event["clips"]
+                    ),
+                ]
+            )
+        return Response(
+            output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="dog-monitor-timeline.csv"'
+            },
+        )
+
+    @app.get("/api/reports")
+    def archived_reports():
+        directory = settings.data_dir / "reports"
+        files = (
+            sorted(
+                directory.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True
+            )
+            if directory.exists()
+            else []
+        )
+        return {
+            "retention_days": settings.report_retention_days,
+            "reports": [
+                {
+                    "name": p.name,
+                    "generated": p.stat().st_mtime,
+                    "bytes": p.stat().st_size,
+                    "url": "/api/reports/" + p.name,
+                }
+                for p in files
+            ],
+        }
+
+    @app.get("/api/reports/{filename}")
+    def archived_report(filename: str):
+        if not re.fullmatch(r"(night|week)-[0-9]{4}-[0-9]{2}-[0-9]{2}\.pdf", filename):
+            raise HTTPException(404, "Report not found")
+        path = settings.data_dir / "reports" / filename
+        if not path.is_file():
+            raise HTTPException(404, "Report no longer retained")
+        return FileResponse(path, media_type="application/pdf", filename=filename)
 
     @app.get("/metrics")
     def metrics(store: Store = Depends(selected_store)):

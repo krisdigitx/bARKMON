@@ -370,3 +370,12 @@ def test_tcp_failure_reports_reason_without_starting_ffmpeg(setup, monkeypatch):
     worker.record(settings, store, stop)
     assert "Camera unreachable" in store.statuses()["connection_detail"]["value"]
     assert store.statuses()["recorder"]["value"].startswith("disconnected")
+
+
+def test_dashboard_assets_are_reloaded_after_deployments(setup):
+    settings, _ = setup
+    with TestClient(create_app(settings)) as client:
+        for path in ["/", "/static/app.js", "/static/style.css"]:
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store"

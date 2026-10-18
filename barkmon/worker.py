@@ -258,6 +258,56 @@ def record(settings, store, stop):
         stop.wait(5)
 
 
+def backfill_one(store):
+    """Enrich retained legacy events without rerunning inference or losing reviews."""
+    from barkmon.acoustics import measurements
+
+    with store.connect() as db:
+        rows = db.execute(
+            "SELECT e.*,s.start AS segment_start FROM events e JOIN segments s ON s.id=e.segment_id WHERE e.fingerprint IS NULL AND s.state='done' AND e.segment_id=(SELECT segment_id FROM events WHERE fingerprint IS NULL LIMIT 1)"
+        ).fetchall()
+    if not rows:
+        return False
+    try:
+        with wave.open(
+            str(store.settings.recordings / rows[0]["segment_id"])
+        ) as stream:
+            audio = (
+                np.frombuffer(
+                    stream.readframes(stream.getnframes()), dtype="<i2"
+                ).astype(np.float32)
+                / 32768
+            )
+        updates = []
+        for row in rows:
+            values = measurements(
+                audio,
+                row["start"] - row["segment_start"],
+                row["end"] - row["segment_start"],
+            )
+            updates.append(
+                (
+                    values["rms_dbfs"],
+                    values["peak_dbfs"],
+                    values["bark_count"],
+                    values["fingerprint"],
+                    row["id"],
+                )
+            )
+        with store.connect() as db:
+            db.executemany(
+                "UPDATE events SET rms_dbfs=?,peak_dbfs=?,bark_count=?,fingerprint=? WHERE id=? AND fingerprint IS NULL",
+                updates,
+            )
+    except (OSError, EOFError, wave.Error):
+        with store.connect() as db:
+            db.executemany(
+                "UPDATE events SET fingerprint='[]' WHERE id=?",
+                [(row["id"],) for row in rows],
+            )
+    return True
+
+
 def run():
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
@@ -274,6 +324,12 @@ def run():
     ]
     for recorder in recorders:
         recorder.start()
+    from barkmon.report_archive import report_loop
+
+    report_thread = threading.Thread(
+        target=report_loop, args=(settings, list(stores), stop), daemon=True
+    )
+    report_thread.start()
     try:
         while not stop.is_set():
             for store, recorder in zip(stores, recorders):
@@ -321,10 +377,12 @@ def run():
                     stop.wait(1)
             else:
                 stop.wait(2)
+            backfill_one(store)
     finally:
         stop.set()
         for recorder in recorders:
             recorder.join(timeout=30)
+        report_thread.join(timeout=10)
         for store in stores:
             store.status("worker", "stopped")
 

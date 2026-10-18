@@ -12,6 +12,10 @@ class Event:
     start: float
     end: float
     score: float
+    rms_dbfs: float | None = None
+    peak_dbfs: float | None = None
+    bark_count: int | None = None
+    fingerprint: str | None = None
 
 
 def merge_hits(hits, segment_start, duration):
@@ -73,4 +77,12 @@ class Yamnet:
             score = float(max(scores[i] for i in self.classes))
             if score >= self.threshold:
                 hits.append((offset / RATE, score))
-        return merge_hits(hits, start, len(audio) / RATE)
+        from barkmon.acoustics import measurements
+
+        events = merge_hits(hits, start, len(audio) / RATE)
+        for event in events:
+            for key, value in measurements(
+                audio, event.start - start, event.end - start
+            ).items():
+                setattr(event, key, value)
+        return events

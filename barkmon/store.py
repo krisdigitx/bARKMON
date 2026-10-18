@@ -29,6 +29,16 @@ class Store:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
+            for name, kind in [
+                ("rms_dbfs", "REAL"),
+                ("peak_dbfs", "REAL"),
+                ("bark_count", "INTEGER"),
+                ("fingerprint", "TEXT"),
+            ]:
+                if name not in columns:
+                    db.execute(f"ALTER TABLE events ADD COLUMN {name} {kind}")
 
     @contextmanager
     def connect(self):
@@ -67,8 +77,20 @@ class Store:
         with self.connect() as db:
             db.execute("DELETE FROM events WHERE segment_id=?", (segment_id,))
             db.executemany(
-                "INSERT INTO events(segment_id,start,end,score) VALUES(?,?,?,?)",
-                [(segment_id, e.start, e.end, e.score) for e in events],
+                "INSERT INTO events(segment_id,start,end,score,rms_dbfs,peak_dbfs,bark_count,fingerprint) VALUES(?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        segment_id,
+                        e.start,
+                        e.end,
+                        e.score,
+                        e.rms_dbfs,
+                        e.peak_dbfs,
+                        e.bark_count,
+                        e.fingerprint,
+                    )
+                    for e in events
+                ],
             )
             db.execute("UPDATE segments SET state='done' WHERE id=?", (segment_id,))
 

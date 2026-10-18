@@ -20,9 +20,23 @@ class Settings:
     camera_path: str = os.getenv("CAMERA_PATH", "/stream1")
     camera2_host: str = os.getenv("CAMERA2_HOST", "")
     camera2_path: str = os.getenv("CAMERA2_PATH", "/stream1")
+    dedup_seconds: float = float(os.getenv("DEDUP_SECONDS", "0.75"))
+    dedup_similarity: float = float(os.getenv("DEDUP_SIMILARITY", "0.85"))
+    episode_gap_seconds: float = float(os.getenv("EPISODE_GAP_SECONDS", "1"))
+    report_retention_days: int = int(os.getenv("REPORT_RETENTION_DAYS", "90"))
+    report_max_bytes: int = int(float(os.getenv("REPORT_MAX_MIB", "256")) * 1024**2)
+    report_base_url: str = os.getenv("REPORT_BASE_URL", "")
     segment_seconds: int = 60
 
     def __post_init__(self):
+        if (
+            not 0 <= self.dedup_seconds <= 5
+            or not 0 <= self.dedup_similarity <= 1
+            or not 0 <= self.episode_gap_seconds <= 10
+        ):
+            raise ValueError("Invalid timeline merging settings")
+        if self.report_retention_days < 1 or self.report_max_bytes <= 0:
+            raise ValueError("Invalid report retention settings")
         if not 0 < self.threshold <= 1:
             raise ValueError("BARK_THRESHOLD must be in (0, 1]")
         if (

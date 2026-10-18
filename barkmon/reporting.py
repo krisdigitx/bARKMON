@@ -5,7 +5,9 @@ from zoneinfo import ZoneInfo
 def period(settings, day, mode):
     zone = ZoneInfo(settings.timezone)
     now = datetime.now(zone)
-    if day is None:
+    if day is None and mode == "week":
+        day = now.date() - timedelta(days=6)
+    elif day is None:
         day = (
             (now.date() - timedelta(days=1))
             if mode == "night" and now.hour < settings.night_start
