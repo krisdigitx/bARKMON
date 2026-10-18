@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Barkmon · Kangal monitor</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<body>
+<header><a class="brand" href="/">◖ Barkmon</a><span class="subtitle">KANGAL MONITOR</span><span id="live" role="status">Connecting…</span></header>
+<main>
+<div class="intro"><div class="eyebrow">A LITTLE CLARITY, NIGHT AFTER NIGHT</div><h1>Know how the night sounded.</h1><p>Recorded moments, estimated barking activity, and room to review.</p></div>
+<section class="toolbar" aria-label="Reporting period"><label>Starting date <input id="date" type="date"></label><label>Period <select id="mode"><option value="night">Night</option><option value="day">Day</option><option value="week">7 days</option></select></label><button id="refresh">Refresh</button><div class="exports"><a id="csv">Export CSV ↗</a><a id="pdf">Download PDF ↗</a></div></section>
+<div id="error" role="alert" hidden></div><p id="period" class="muted"></p>
+<section class="cards" aria-label="Summary"><article><span>Detected episodes</span><strong id="episodes">—</strong><small>Adjacent positive frames grouped</small></article><article><span>Barking duration</span><strong id="duration">—</strong><small>Estimated from classification</small></article><article><span>Longest episode</span><strong id="longest">—</strong><small>Within the selected period</small></article><article><span>Recording coverage</span><strong id="coverage">—</strong><small id="analysis">Of elapsed time</small></article></section>
+<section class="panel"><div class="panel-heading"><div><h2>The sound of your night</h2><p class="muted">Estimated barking seconds per hour</p></div><span id="backlog" class="muted"></span></div><div id="chart" role="img" aria-label="Hourly barking timeline"></div><div class="chart-caption"><span id="chart-start"></span><span id="chart-end"></span></div></section>
+<section class="panel"><div class="panel-heading"><div><h2>Listen. Review. Understand.</h2><p class="muted">Confirm a detection or mark a false alarm to refine your report.</p></div><span id="event-count" class="muted"></span></div><audio id="player" controls preload="none" hidden></audio><div class="table-wrap"><table><thead><tr><th>Time</th><th>Duration</th><th>Model score</th><th>Review</th><th>Recording</th></tr></thead><tbody id="events"></tbody></table></div><div class="pagination"><button id="previous">← Previous</button><span id="page"></span><button id="next">Next →</button></div></section>
+<footer><p id="storage"></p><p>Detections are estimates, not exact individual bark counts. No calibrated noise levels are measured. Reports reflect retained recordings and manual reviews.</p></footer>
+</main></body></html>

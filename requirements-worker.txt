@@ -1,0 +1,2 @@
+-r requirements.txt
+tflite-runtime==2.14.0

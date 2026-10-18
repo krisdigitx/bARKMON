@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: barkmon
+  labels:
+    app.kubernetes.io/name: barkmon
+spec:
+  replicas: 1
+  # Only one recorder and SQLite writer pod may own the camera at a time.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: barkmon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: barkmon
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      terminationGracePeriodSeconds: 45
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/krisdigitx/barkmon:main
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: barkmon
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+        - name: worker
+          image: ghcr.io/krisdigitx/barkmon:main
+          imagePullPolicy: Always
+          command: [python, -m, barkmon.worker]
+          envFrom:
+            - configMapRef:
+                name: barkmon
+          env:
+            - name: RTSP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: tapo-credentials
+                  key: username
+            - name: RTSP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tapo-credentials
+                  key: password
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 768Mi
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import sqlite3,time; c=sqlite3.connect('/data/barkmon.sqlite3', timeout=10); r=c.execute(\"SELECT updated FROM status WHERE name='worker' AND value='running'\").fetchone(); assert r and time.time()-r[0]<180"
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: barkmon-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi

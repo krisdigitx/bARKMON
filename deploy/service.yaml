@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: barkmon
+  labels:
+    app.kubernetes.io/name: barkmon
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: barkmon
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

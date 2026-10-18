@@ -1,0 +1,5 @@
+fastapi==0.115.12
+uvicorn==0.34.2
+numpy==1.26.4; python_version < '3.13'
+numpy==2.2.5; python_version >= '3.13'
+reportlab==4.4.0

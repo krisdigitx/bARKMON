@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kangal-monitor
+resources:
+  - deployment.yaml
+  - service.yaml
+images:
+  - name: ghcr.io/krisdigitx/barkmon
+    newTag: main
+configMapGenerator:
+  - name: barkmon
+    envs:
+      - config.env
