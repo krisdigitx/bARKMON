@@ -6,7 +6,7 @@ resources:
   - service.yaml
 images:
   - name: ghcr.io/krisdigitx/barkmon
-    digest: sha256:47e4aa64efec16e573fec36a2305e3fc727213b20bdb8e15b0bb5c2d8a7f2975
+    digest: sha256:b94bac86ea07ffd93eaa00b2347d2fb34b711ed67bd02095d09fbda80c8704a2
 configMapGenerator:
   - name: barkmon
     envs:
