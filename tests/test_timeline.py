@@ -17,7 +17,7 @@ from barkmon.worker import backfill_one, save_audio
 
 
 def stores_for(tmp_path):
-    config = Settings(data_dir=tmp_path, camera2_host="192.168.1.200", min_free_bytes=0)
+    config = Settings(data_dir=tmp_path, camera2_host="192.168.1.206", min_free_bytes=0)
     return config, [Store(c) for c in camera_settings(config)]
 
 

@@ -260,7 +260,7 @@ def test_two_cameras_keep_history_audio_reviews_and_reconnect_requests_separate(
     from barkmon.config import camera_settings
 
     settings, original = setup
-    settings = replace(settings, camera2_host="192.168.1.200")
+    settings = replace(settings, camera2_host="192.168.1.206")
     configs = camera_settings(settings)
     assert configs[0].data_dir == settings.data_dir
     assert sum(c.max_storage_bytes for c in configs) <= settings.max_storage_bytes
@@ -274,7 +274,7 @@ def test_two_cameras_keep_history_audio_reviews_and_reconnect_requests_separate(
     second.complete(second_name, [Event(start, start + 0.96, 0.9)])
     with TestClient(create_app(settings)) as client:
         cameras = client.get("/api/cameras").json()["cameras"]
-        assert [c["host"] for c in cameras] == ["192.168.1.112", "192.168.1.200"]
+        assert [c["host"] for c in cameras] == ["192.168.1.207", "192.168.1.206"]
         assert client.get("/api/pipeline?camera=camera1").json()["files"] == 1
         assert client.get("/api/pipeline?camera=camera2").json()["files"] == 1
         assert (
