@@ -431,3 +431,67 @@ def test_tunnel_origin_controls(tmp_path):
 def test_invalid_public_origin(url):
     with pytest.raises(ValueError, match="PUBLIC_BASE_URL"):
         Settings(public_base_url=url)
+
+
+def test_detection_notes_persist_and_validate(setup):
+    from dataclasses import replace
+
+    settings, store = setup
+    settings = replace(settings, camera2_host="192.168.1.206")
+    start = datetime(2026, 10, 18, 1, tzinfo=ZoneInfo("Europe/London")).timestamp()
+    save_audio(settings, store, bytes(32000), start)
+    filename = next(settings.recordings.glob("*.wav")).name
+    store.complete(filename, [Event(start, start + 0.48, 0.8)])
+    with TestClient(create_app(settings)) as client:
+        event = client.get("/api/events?date=2026-10-17").json()["events"][0]
+        url = f"/api/events/{event['id']}/note?segment={filename}"
+        note = 'Delivery at the gate\n<script>alert("test")</script>'
+        assert (
+            client.put(
+                url, json={"note": note}, headers={"Origin": "https://evil.example"}
+            ).status_code
+            == 403
+        )
+        assert client.put(url, json={"note": "x" * 4001}).status_code == 422
+        assert client.put(url, json={"note": None}).status_code == 422
+        assert (
+            client.put(url + "&camera=camera2", json={"note": note}).status_code == 404
+        )
+        assert (
+            client.put(
+                f"/api/events/{event['id']}/note?segment=wrong.wav", json={"note": note}
+            ).status_code
+            == 404
+        )
+        assert client.put(url, json={"note": note}).json() == {"note": note}
+        assert (
+            client.get("/api/events?date=2026-10-17").json()["events"][0]["review"]
+            == "unreviewed"
+        )
+        assert (
+            client.get("/api/timeline?date=2026-10-17").json()["events"][0]["clips"][0][
+                "note"
+            ]
+            == note
+        )
+    with TestClient(create_app(settings)) as client:
+        assert (
+            client.get("/api/events?date=2026-10-17").json()["events"][0]["note"]
+            == note
+        )
+        assert client.put(url, json={"note": ""}).json() == {"note": ""}
+
+
+def test_note_migration_preserves_existing_detections(setup):
+    settings, store = setup
+    save_audio(settings, store, bytes(32000), 1000)
+    filename = next(settings.recordings.glob("*.wav")).name
+    store.complete(filename, [Event(1000, 1000.48, 0.8)])
+    with store.connect() as db:
+        db.execute("UPDATE events SET review='confirmed'")
+        db.execute("ALTER TABLE events DROP COLUMN note")
+    migrated = Store(settings)
+    Store(settings)  # Repeated startup must remain safe.
+    with migrated.connect() as db:
+        row = db.execute("SELECT review,note FROM events").fetchone()
+        assert dict(row) == {"review": "confirmed", "note": ""}

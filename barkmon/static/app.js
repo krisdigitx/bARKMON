@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 let offset = 0, total = 0, zone = 'Europe/London', loading = false, refreshAgain = false;
 const size = 100;
+const noteDrafts = new Map();
 const gib = bytes => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(2)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
 const age = seconds => seconds === null ? '—' : seconds < 60 ? `${Math.floor(seconds)}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${(seconds / 3600).toFixed(1)}h`;
 const duration = seconds => seconds >= 60 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : `${seconds.toFixed(1)}s`;
@@ -14,6 +15,7 @@ async function request(url, options) {
 }
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; }
 async function refresh() {
+  if (document.activeElement?.classList.contains('detection-note')) return;
   if (loading) { refreshAgain = true; return; }
   loading = true;
   try {
@@ -37,6 +39,7 @@ async function refresh() {
       request(`${combined ? '/api/timeline' : '/api/events'}?${query}&limit=${size}&offset=${offset}`),
       combined ? overview.then(value => value.pipeline) : request(`/api/pipeline?camera=${encodeURIComponent(camera.id)}`)
     ]);
+    if (document.activeElement?.classList.contains('detection-note')) return;
     if (query.toString() !== params().toString()) { refreshAgain = true; return; }
     zone = status.timezone;
     $('error').hidden = true;
@@ -106,7 +109,7 @@ async function refresh() {
     $('event-count').textContent = `${total} detections · ${summary.reviewed} reviewed`;
     for (const event of list.events) {
       const row = document.createElement('tr');
-      const clips = event.clips || [{camera_id: camera.id, camera_name: camera.name, event_id: event.id, rms_dbfs: event.rms_dbfs, url: `/api/clip/${event.id}?camera=${encodeURIComponent(camera.id)}&segment=${encodeURIComponent(event.segment_id)}`}];
+      const clips = event.clips || [{camera_id: camera.id, camera_name: camera.name, event_id: event.id, source_segment: event.segment_id, note: event.note, rms_dbfs: event.rms_dbfs, url: `/api/clip/${event.id}?camera=${encodeURIComponent(camera.id)}&segment=${encodeURIComponent(event.segment_id)}`}];
       const span = event.end-event.start;
       const rate = event.barks_per_minute ?? (event.bark_count !== null && event.bark_count !== undefined && span ? event.bark_count*60/span : null);
       const values = [
@@ -140,11 +143,35 @@ async function refresh() {
       play.onclick=()=>{const player=$('player');player.hidden=false;player.src=clips[Number(source.value)].url;player.play().catch(showError);};
       const download=document.createElement('a');download.textContent='Download WAV';download.download='';
       const updateDownload=()=>{download.href=clips[Number(source.value)].url;};source.onchange=updateDownload;updateDownload();
-      audioCell.append(source,play,download);row.append(audioCell);$('events').append(row);
+      audioCell.append(source,play,download);row.append(audioCell);
+      const notesCell=document.createElement('td');
+      for (const clip of clips) {
+        const key=JSON.stringify([clip.camera_id,clip.event_id,clip.source_segment]);
+        const group=document.createElement('div'), label=document.createElement('label');
+        label.textContent=`${clip.camera_name} · ${stamp(clip.start ?? event.start)}`;
+        const input=document.createElement('textarea');
+        input.className='detection-note';input.rows=3;input.maxLength=4000;
+        input.placeholder='Add a note…';
+        input.value=noteDrafts.get(key) ?? clip.note ?? '';
+        input.setAttribute('aria-label',`Note for ${label.textContent}`);
+        const save=document.createElement('button'), status=document.createElement('span');
+        save.textContent='Save note';status.setAttribute('role','status');
+        input.oninput=()=>{noteDrafts.set(key,input.value);status.textContent='Unsaved';};
+        save.onclick=async()=>{
+          save.disabled=true;input.disabled=true;status.textContent='Saving…';
+          try {
+            await request(`/api/events/${clip.event_id}/note?camera=${encodeURIComponent(clip.camera_id)}&segment=${encodeURIComponent(clip.source_segment)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({note:input.value})});
+            noteDrafts.delete(key);status.textContent='Saved';
+          } catch(error) {status.textContent='Not saved. Retry.';showError(error);}
+          finally {save.disabled=false;input.disabled=false;}
+        };
+        label.append(input);group.append(label,save,status);notesCell.append(group);
+      }
+      row.append(notesCell);$('events').append(row);
     }
     if (!list.events.length) {
       const row = document.createElement('tr'), cell = document.createElement('td');
-      cell.colSpan = 7; cell.className = 'empty-state';
+      cell.colSpan = 8; cell.className = 'empty-state';
       cell.textContent = summary.recorded_seconds ? 'No detections in this period. Check analysis coverage above.' : 'No recordings yet for this period. Check the camera and worker status.';
       row.append(cell); $('events').append(row);
     }

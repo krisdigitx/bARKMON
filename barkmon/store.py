@@ -36,6 +36,7 @@ class Store:
                 ("peak_dbfs", "REAL"),
                 ("bark_count", "INTEGER"),
                 ("fingerprint", "TEXT"),
+                ("note", "TEXT NOT NULL DEFAULT ''"),
             ]:
                 if name not in columns:
                     db.execute(f"ALTER TABLE events ADD COLUMN {name} {kind}")

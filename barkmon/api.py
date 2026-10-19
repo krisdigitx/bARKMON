@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from barkmon.config import Settings, camera_settings
 from barkmon.reporting import period, summary
@@ -219,6 +219,27 @@ def create_app(settings=None):
             if not cursor.rowcount:
                 raise HTTPException(404, "Event no longer available")
         return {"review": body.review}
+
+    class DetectionNote(BaseModel):
+        note: str = Field(max_length=4000)
+
+    @app.put("/api/events/{event_id}/note")
+    def save_note(
+        event_id: int,
+        body: DetectionNote,
+        request: Request,
+        segment: str,
+        store: Store = Depends(selected_store),
+    ):
+        check_origin(request)
+        with store.connect() as db:
+            cursor = db.execute(
+                "UPDATE events SET note=? WHERE id=? AND segment_id=?",
+                (body.note, event_id, segment),
+            )
+            if not cursor.rowcount:
+                raise HTTPException(404, "Event no longer available")
+        return {"note": body.note}
 
     @app.get("/api/audio/{event_id}")
     def audio(event_id: int, store: Store = Depends(selected_store)):

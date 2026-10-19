@@ -136,6 +136,7 @@ def episodes(stores, settings, start, end):
                 "start": e["start"],
                 "end": e["end"],
                 "review": e["review"],
+                "note": e["note"],
                 "rms_dbfs": e["rms_dbfs"],
                 "peak_dbfs": e["peak_dbfs"],
                 "url": f"/api/clip/{e['id']}?camera={e['camera_id']}&segment={e['segment_id']}",

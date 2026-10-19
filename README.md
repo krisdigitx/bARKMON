@@ -150,3 +150,19 @@ tunnel with HTTP origin `barkmon.kangal-monitor.svc.cluster.local:80` and protec
 it with Cloudflare Access. Follow `docs/BARKMON_CLOUDFLARE.md` in home-lab for
 the dashboard setup and verification. The tunnel routes are remotely managed;
 Argo CD deploys the app and connector but does not create the Cloudflare route.
+
+## Detection notes
+
+Each detection has a Notes field and Save note button (up to 4,000 characters).
+In the combined timeline, notes belong to each camera's source detection; they
+remain visible in the individual camera view as well. Save an empty field to
+clear a note. Drafts survive dashboard refreshes within the current page; click
+Save note before reloading or closing the browser. Notes are stored in the
+camera's SQLite database on the persistent volume and are removed when the
+associated detection is deleted by recording retention. Existing databases are
+updated automatically on startup. Notes do not change the review status and
+are not included in CSV or PDF reports.
+
+PDF reports share the dashboard's forest-green palette, warm paper background,
+serif headings and summary cards. New downloads and scheduled reports use this
+layout; previously archived PDFs remain unchanged.
