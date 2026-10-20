@@ -56,7 +56,7 @@ The Service exposes HTTP port 80 on the LAN through MetalLB. There is no applica
 
 ## Cameras and connection diagnostics
 
-The dashboard's camera selector switches status, recordings, detections, reviews, reports and playback together. Both cameras record independently in the background; selecting a camera does not stop the other. Default home-lab addresses are Camera 1 `192.168.1.207` and Camera 2 `192.168.1.206`, both using `/stream1` and the same camera account from Vault. Clear `CAMERA2_HOST` to run only the first camera.
+The dashboard's camera selector switches status, recordings, detections, reviews, reports and playback together. Both cameras record independently in the background; selecting a camera does not stop the other. Default home-lab addresses are Camera 1 `192.168.1.212` and Camera 2 `192.168.1.206`, both using `/stream1` and the same camera account from Vault. Clear `CAMERA2_HOST` to run only the first camera.
 
 Camera one's existing files/database stay at `/data/recordings` and `/data/barkmon.sqlite3`; camera two uses `/data/cameras/camera2/recordings` and `/data/cameras/camera2/barkmon.sqlite3`. No history migration is required. Event IDs are scoped to a camera: APIs accept `?camera=camera1` or `?camera=camera2`. `/api/cameras` lists the configured cameras and their status.
 
@@ -96,7 +96,7 @@ Edit `deploy/config.env`; Kustomize generates a versioned ConfigMap so changes t
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `CAMERA_HOST` | `192.168.1.207` | Private RTSP camera IP or hostname, port 554 |
+| `CAMERA_HOST` | `192.168.1.212` | Private RTSP camera IP or hostname, port 554 |
 | `CAMERA_PATH` | `/stream1` | First camera RTSP path |
 | `CAMERA2_HOST` | `192.168.1.206` in deployment | Second camera; empty disables it |
 | `CAMERA2_PATH` | `/stream1` | Second camera RTSP path |
