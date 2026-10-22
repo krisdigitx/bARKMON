@@ -28,9 +28,14 @@ class Settings:
     report_max_bytes: int = int(float(os.getenv("REPORT_MAX_MIB", "256")) * 1024**2)
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")
     report_base_url: str = os.getenv("REPORT_BASE_URL", "")
+    video_enabled: bool = os.getenv("VIDEO_ENABLED", "true").lower() == "true"
+    video_path: str = os.getenv("VIDEO_PATH", "/stream2")
+    video_buffer_seconds: int = int(os.getenv("VIDEO_BUFFER_SECONDS", "900"))
     segment_seconds: int = 60
 
     def __post_init__(self):
+        if not 60 <= self.video_buffer_seconds <= 3600:
+            raise ValueError("VIDEO_BUFFER_SECONDS must be between 60 and 3600")
         if self.public_base_url:
             url = urlsplit(self.public_base_url)
             if (

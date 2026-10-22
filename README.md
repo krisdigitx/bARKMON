@@ -64,7 +64,7 @@ Camera one's existing files/database stay at `/data/recordings` and `/data/barkm
 
 Both camera addresses need the targeted NAT workaround in this home lab. Reapply home-lab's separate `ansible/barkmon-camera-nat.yml` playbook after pulling its updated two-address configuration. If a camera is unreachable from the worker host itself, check its power, Wi-Fi and current IP in the Tapo app; NAT cannot restore an offline/moved camera.
 
-The configured 16 GiB audio budget is **total**, split equally between configured cameras (8 GiB each with two cameras). The volume free-space reserve is shared. At two continuous PCM streams, this permits roughly three days of audio before the space cap, despite the seven-day age limit. Camera views remain available; the default combined timeline groups camera evidence into activity episodes. The system does not identify which dog barked.
+The configured 16 GiB media budget is **total**, split equally between configured cameras (8 GiB each with two cameras). The volume free-space reserve is shared. At two continuous PCM streams, this permits roughly three days of audio before the space cap, before accounting for video, despite the 30-day deployment age limit. Camera views remain available; the default combined timeline groups camera evidence into activity episodes. The system does not identify which dog barked.
 
 ## Combined timeline, relative levels and reports
 
@@ -103,7 +103,7 @@ Edit `deploy/config.env`; Kustomize generates a versioned ConfigMap so changes t
 | `BARK_THRESHOLD` | `0.35` | Initial YAMNet score threshold; validate against real clips |
 | `REPORT_TIMEZONE` | `Europe/London` | Calendar dates and night boundaries, with DST |
 | `NIGHT_START_HOUR` / `NIGHT_END_HOUR` | `22` / `7` | Night begins on the selected starting date |
-| `RETENTION_DAYS` | `7` | Maximum recording and event retention |
+| `RETENTION_DAYS` | `30` in deployment | Maximum audio/video age; dashboard override persists on the volume |
 | `MAX_STORAGE_GIB` | `16` | Audio budget; oldest recordings/events deleted first |
 | `MIN_FREE_GIB` | `1` | Minimum disk reserve; stop recording if it cannot be recovered |
 
@@ -166,3 +166,43 @@ are not included in CSV or PDF reports.
 PDF reports share the dashboard's forest-green palette, warm paper background,
 serif headings and summary cards. New downloads and scheduled reports use this
 layout; previously archived PDFs remain unchanged.
+
+## Detection video and recording retention
+
+For new detections, a background worker saves matching video from **both**
+configured cameras, including a camera that did not detect the bark. Open
+**Video from both cameras** beside a detection and select a camera to play the
+MP4 in the dashboard. Combined episodes list videos for each source detection.
+Audio review remains available separately. Existing detections cannot acquire
+video captured before this feature was deployed.
+
+The worker keeps a 15-minute rolling RTSP video buffer per camera from
+`VIDEO_PATH=/stream2` (Tapo's lower-resolution stream), then encodes event clips
+as H.264/AAC MP4 with fast-start playback and seek support. Each clip covers the
+detection with approximately two seconds of context on either side. It waits
+for the video segment to close; clips usually appear after audio analysis plus
+another 10-20 seconds. Wall-clock alignment is approximate, affected by RTSP
+latency and camera buffering. A disconnected camera, a capture gap or analysis
+more than 15 minutes behind can leave video unavailable; the other source can
+still be saved. The RTSP camera account must allow both audio and video sessions.
+Raw buffer video without detections is automatically discarded after 15 minutes.
+
+**Recording retention** on the dashboard offers 7, 30 or 90 days. Save **30 days**
+to delete audio and event video older than 30 days. The selection is saved in
+`/data/retention.json`, applies to both cameras, survives restarts, and overrides
+`RETENTION_DAYS` (deployment default 30). Cleanup runs automatically; lowering
+the age can remove older recordings at the next cleanup. Saved PDF reports keep
+their separate 90-day policy. Notes disappear when their detection is removed.
+
+The existing 16 GiB budget is shared by audio, video buffers and event videos,
+split across both cameras, with a 1 GiB free-space reserve. **30 days is an age
+limit, not a guarantee:** storage pressure can delete media sooner. Two
+continuous PCM audio streams alone use around 5.2 GiB/day; video shortens that
+window further. Increase the PV and media budget if 30 days of actual coverage
+is required. No storage expansion is performed by enabling this feature.
+
+Set `VIDEO_ENABLED=false` to disable new video capture, `VIDEO_PATH` to select
+the video stream, and `VIDEO_BUFFER_SECONDS` (60-3600, default 900) to adjust the
+rolling buffer. Video files live beside each camera's audio in its `video/`
+directory. Existing authentication and Cloudflare Access protect video URLs in
+the same way as other dashboard media.

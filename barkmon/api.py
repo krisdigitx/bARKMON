@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from barkmon.config import Settings, camera_settings
 from barkmon.reporting import period, summary
 from barkmon.store import Store
+from barkmon.video import retention_days, set_retention, clip_name, video_dir
 from barkmon.timeline import combined_summary, episodes
 from barkmon.reports import render_pdf
 
@@ -125,7 +126,7 @@ def create_app(settings=None):
             "total_bytes": space.total,
             "threshold": settings.threshold,
             "timezone": settings.timezone,
-            "retention_days": settings.retention_days,
+            "retention_days": retention_days(settings),
             "night_start": settings.night_start,
             "night_end": settings.night_end,
             "now": time.time(),
@@ -165,7 +166,7 @@ def create_app(settings=None):
                 "latest_recording_age_seconds": max(0, now - stats["latest_recording"])
                 if stats["latest_recording"] is not None
                 else None,
-                "retention_days": settings.retention_days,
+                "retention_days": retention_days(settings),
                 "segment_seconds": settings.segment_seconds,
                 "format": "16 kHz · mono · 16-bit PCM WAV",
                 "services": store.statuses(),
@@ -240,6 +241,62 @@ def create_app(settings=None):
             if not cursor.rowcount:
                 raise HTTPException(404, "Event no longer available")
         return {"note": body.note}
+
+    class RetentionPolicy(BaseModel):
+        days: int = Field(ge=1, le=365, strict=True)
+
+    @app.get("/api/settings/retention")
+    def get_retention():
+        return {"days": retention_days(settings)}
+
+    @app.put("/api/settings/retention")
+    def update_retention(body: RetentionPolicy, request: Request):
+        check_origin(request)
+        set_retention(settings, body.days)
+        return {"days": body.days}
+
+    @app.get("/api/events/{event_id}/videos")
+    def event_videos(
+        event_id: int, segment: str, store: Store = Depends(selected_store)
+    ):
+        with store.connect() as db:
+            event = db.execute(
+                "SELECT * FROM events WHERE id=? AND segment_id=?", (event_id, segment)
+            ).fetchone()
+        if not event:
+            raise HTTPException(404, "Detection expired")
+        return {
+            "videos": [
+                {
+                    "camera_id": source.camera_id,
+                    "camera_name": source.camera_name,
+                    "available": (
+                        video_dir(store.settings) / clip_name(event, source.camera_id)
+                    ).is_file(),
+                    "url": f"/api/video/{event_id}?camera={store.settings.camera_id}&source={source.camera_id}&segment={segment}",
+                }
+                for source in camera_settings(settings)
+            ]
+        }
+
+    @app.get("/api/video/{event_id}")
+    def detection_video(
+        event_id: int, segment: str, source: str, store: Store = Depends(selected_store)
+    ):
+        if source not in app.state.stores:
+            raise HTTPException(404, "Camera not configured")
+        with store.connect() as db:
+            event = db.execute(
+                "SELECT * FROM events WHERE id=? AND segment_id=?", (event_id, segment)
+            ).fetchone()
+        if not event:
+            raise HTTPException(404, "Detection expired")
+        path = video_dir(store.settings) / clip_name(event, source)
+        if not path.is_file():
+            raise HTTPException(404, "Video pending, expired or camera unavailable")
+        return FileResponse(
+            path, media_type="video/mp4", headers={"Cache-Control": "private, no-store"}
+        )
 
     @app.get("/api/audio/{event_id}")
     def audio(event_id: int, store: Store = Depends(selected_store)):

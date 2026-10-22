@@ -19,6 +19,7 @@ import numpy as np
 from barkmon.config import Settings, camera_settings
 from barkmon.detection import RATE, Yamnet
 from barkmon.store import Store
+from barkmon.video import capture_video, video_loop, retention_days, cleanup_video
 
 log = logging.getLogger("barkmon")
 
@@ -62,11 +63,19 @@ def cleanup(settings, store, now=None):
     now = time.time() if now is None else now
     with store.connect() as db:
         segments = db.execute("SELECT * FROM segments ORDER BY start").fetchall()
-    total = sum(r["bytes"] for r in segments)
+    cleanup_video(settings, now)
+    video_bytes = sum(
+        p.stat().st_size
+        for p in (settings.data_dir / "video").rglob("*")
+        if p.is_file()
+    )
+    total = sum(r["bytes"] for r in segments) + video_bytes
     free = shutil.disk_usage(settings.data_dir).free
     deleted = 0
     for row in segments:
-        expired = row["start"] + row["duration"] < now - settings.retention_days * 86400
+        expired = (
+            row["start"] + row["duration"] < now - retention_days(settings) * 86400
+        )
         if (
             not expired
             and total <= settings.max_storage_bytes
@@ -324,6 +333,19 @@ def run():
     ]
     for recorder in recorders:
         recorder.start()
+    video_threads = []
+    if settings.video_enabled:
+        video_threads = [
+            threading.Thread(
+                target=capture_video, args=(s.settings, s, stop), daemon=True
+            )
+            for s in stores
+        ]
+        video_threads.append(
+            threading.Thread(target=video_loop, args=(list(stores), stop), daemon=True)
+        )
+        for thread in video_threads:
+            thread.start()
     from barkmon.report_archive import report_loop
 
     report_thread = threading.Thread(
@@ -383,6 +405,8 @@ def run():
         for recorder in recorders:
             recorder.join(timeout=30)
         report_thread.join(timeout=10)
+        for thread in video_threads:
+            thread.join(timeout=10)
         for store in stores:
             store.status("worker", "stopped")
 

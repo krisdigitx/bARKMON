@@ -143,7 +143,26 @@ async function refresh() {
       play.onclick=()=>{const player=$('player');player.hidden=false;player.src=clips[Number(source.value)].url;player.play().catch(showError);};
       const download=document.createElement('a');download.textContent='Download WAV';download.download='';
       const updateDownload=()=>{download.href=clips[Number(source.value)].url;};source.onchange=updateDownload;updateDownload();
-      audioCell.append(source,play,download);row.append(audioCell);
+      audioCell.append(source,play,download);
+      const watch=document.createElement('button');watch.textContent='Video from both cameras';
+      const videoLinks=document.createElement('div');
+      watch.onclick=async()=>{
+        watch.disabled=true;videoLinks.replaceChildren();
+        try {
+          // An episode may contain several detections; each keeps its own footage.
+          for (const clip of clips) {
+            const result=await request(`/api/events/${clip.event_id}/videos?camera=${encodeURIComponent(clip.camera_id)}&segment=${encodeURIComponent(clip.source_segment)}`);
+            for (const video of result.videos) {
+              const button=document.createElement('button');
+              button.textContent=`${video.camera_name} · ${stamp(clip.start ?? event.start)}${video.available ? '' : ' (pending / unavailable)'}`;
+              button.disabled=!video.available;
+              button.onclick=()=>{const player=$('video-player');player.hidden=false;player.src=video.url;player.play().catch(showError);};
+              videoLinks.append(button);
+            }
+          }
+        } catch(error) {showError(error);} finally {watch.disabled=false;}
+      };
+      audioCell.append(watch,videoLinks);row.append(audioCell);
       const notesCell=document.createElement('td');
       for (const clip of clips) {
         const key=JSON.stringify([clip.camera_id,clip.event_id,clip.source_segment]);
@@ -198,3 +217,13 @@ $('check-camera').onclick = async () => {
 };
 refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 15000);
+
+request('/api/settings/retention').then(policy=>{
+  if (![...$('retention-days').options].some(option=>Number(option.value)===policy.days)) $('retention-days').add(new Option(`${policy.days} days`,String(policy.days)));
+  $('retention-days').value=String(policy.days);
+}).catch(showError);
+$('save-retention').onclick=async()=>{
+  $('save-retention').disabled=true;
+  try {await request('/api/settings/retention',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({days:Number($('retention-days').value)})});$('retention-status').textContent='Saved. Applied by automatic cleanup.';}
+  catch(error) {showError(error);} finally {$('save-retention').disabled=false;}
+};
