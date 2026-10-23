@@ -218,29 +218,15 @@ def cleanup_video(settings, now=None):
     for path in clips:
         if path.stat().st_mtime < now - retention_days(settings) * 86400:
             path.unlink(missing_ok=True)
-    # Include video and audio in the existing per-camera shared disk budget.
-    media = (
-        list(settings.recordings.glob("*.wav"))
-        + list(directory.rglob("*.mkv"))
-        + list(directory.glob("*.mp4"))
-    )
-    total = sum(p.stat().st_size for p in media if p.exists())
-    free = shutil.disk_usage(settings.data_dir).free
-    for path in clips:
-        if total <= settings.max_storage_bytes and free >= settings.min_free_bytes:
-            break
-        if path.exists():
-            size = path.stat().st_size
-            path.unlink()
-            total -= size
-            free += size
 
 
 def video_loop(stores, stop):
     while not stop.is_set():
         for store in stores:
             try:
-                cleanup_video(store.settings)
+                from barkmon.worker import cleanup
+
+                cleanup(store.settings, store)
                 with store.connect() as db:
                     events = db.execute(
                         "SELECT * FROM events WHERE start>? ORDER BY start",

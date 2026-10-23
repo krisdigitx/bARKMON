@@ -146,3 +146,30 @@ def test_audio_cleanup_respects_dashboard_policy_for_both_cameras(tmp_path):
         cleanup(camera, store, now)
         assert not (camera.recordings / "keep.wav").exists()
         set_retention(settings, 30)
+
+
+@pytest.mark.parametrize("video_is_newer", [True, False])
+def test_storage_cap_evicts_oldest_media_across_formats(tmp_path, video_is_newer):
+    from dataclasses import replace
+    from barkmon.worker import cleanup
+
+    settings = replace(
+        Settings(data_dir=tmp_path), max_storage_bytes=120, min_free_bytes=0
+    )
+    store = Store(settings)
+    audio = settings.recordings / "segment.wav"
+    audio.write_bytes(b"a" * 100)
+    audio_start = 1000 if video_is_newer else 2000
+    store.add_segment(audio.name, audio_start, 60, 100)
+    store.complete(audio.name, [Event(audio_start, audio_start + 1, 0.8)])
+    video = video_dir(settings) / "clip.mp4"
+    video.write_bytes(b"v" * 50)
+    timestamp = 2000 if video_is_newer else 1000
+    os.utime(video, (timestamp, timestamp))
+    cleanup(settings, store, now=2100)
+    assert video.exists() is video_is_newer
+    assert audio.exists() is not video_is_newer
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == (
+            0 if video_is_newer else 1
+        )

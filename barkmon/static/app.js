@@ -154,7 +154,7 @@ async function refresh() {
             const result=await request(`/api/events/${clip.event_id}/videos?camera=${encodeURIComponent(clip.camera_id)}&segment=${encodeURIComponent(clip.source_segment)}`);
             for (const video of result.videos) {
               const button=document.createElement('button');
-              button.textContent=`${video.camera_name} · ${stamp(clip.start ?? event.start)}${video.available ? '' : ' (pending / unavailable)'}`;
+              button.textContent=`${video.camera_name} · ${stamp(clip.start ?? event.start)}${video.available ? '' : ` (${video.reason})`}`;
               button.disabled=!video.available;
               button.onclick=()=>{const player=$('video-player');player.hidden=false;player.src=video.url;player.play().catch(showError);};
               videoLinks.append(button);

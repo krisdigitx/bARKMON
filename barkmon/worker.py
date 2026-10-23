@@ -69,29 +69,52 @@ def cleanup(settings, store, now=None):
         for p in (settings.data_dir / "video").rglob("*")
         if p.is_file()
     )
+    clips = []
+    for path in (settings.data_dir / "video").glob("*.mp4"):
+        if path.name.endswith(".tmp.mp4"):
+            continue
+        try:
+            stat = path.stat()
+            clips.append((stat.st_mtime, stat.st_size, path, None))
+        except FileNotFoundError:
+            continue
     total = sum(r["bytes"] for r in segments) + video_bytes
     free = shutil.disk_usage(settings.data_dir).free
     deleted = 0
-    for row in segments:
-        expired = (
-            row["start"] + row["duration"] < now - retention_days(settings) * 86400
-        )
+    # Evict by recording time across formats. Audio must not crowd out all
+    # event video simply because its continuous recording fills the budget.
+    media = sorted(
+        [
+            (
+                r["start"] + r["duration"],
+                r["bytes"],
+                settings.recordings / r["id"],
+                r["id"],
+            )
+            for r in segments
+        ]
+        + clips,
+        key=lambda item: item[0],
+    )
+    for end, size, path, segment_id in media:
+        expired = end < now - retention_days(settings) * 86400
         if (
             not expired
             and total <= settings.max_storage_bytes
             and free >= settings.min_free_bytes
         ):
             break
-        # Prefer releasing space even if detection has fallen behind. Report this.
-        with store.connect() as db:
-            db.execute("DELETE FROM segments WHERE id=?", (row["id"],))
-        (settings.recordings / row["id"]).unlink(missing_ok=True)
-        total -= row["bytes"]
-        free += row["bytes"]
+        if segment_id is not None:
+            with store.connect() as db:
+                db.execute("DELETE FROM segments WHERE id=?", (segment_id,))
+        path.unlink(missing_ok=True)
+        total -= size
+        free += size
         deleted += 1
     if deleted:
         store.status(
-            "retention", f"Removed {deleted} segments; reports cover retained data only"
+            "retention",
+            f"Removed {deleted} media files; reports cover retained data only",
         )
     if free < settings.min_free_bytes:
         raise OSError("Storage reserve exhausted")

@@ -273,6 +273,13 @@ def create_app(settings=None):
                     "available": (
                         video_dir(store.settings) / clip_name(event, source.camera_id)
                     ).is_file(),
+                    "reason": (
+                        "Video capture is disabled"
+                        if not settings.video_enabled
+                        else "Processing; retry shortly"
+                        if event["end"] > time.time() - settings.video_buffer_seconds
+                        else "No saved video: footage expired, was unavailable, or predates video capture"
+                    ),
                     "url": f"/api/video/{event_id}?camera={store.settings.camera_id}&source={source.camera_id}&segment={segment}",
                 }
                 for source in camera_settings(settings)
